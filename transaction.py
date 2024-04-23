@@ -1,13 +1,15 @@
+from hashlib import sha256
+
 class Transaction:
-    def __init__(self, sender, recipient, amount, data, signature=None, miner_node=None):
-        if sender is None or recipient is None or amount is None or data is None:
+    def __init__(self, sender, recipient, amount, data, signature=None, sender_public_key=None):
+        if any(param is None for param in [sender, recipient, amount, data]):
             raise ValueError("Invalid transaction parameters")
         self.sender = sender
         self.recipient = recipient
         self.amount = float(amount)
         self.data = data
-        self.signature = signature if signature else b''
-        self.miner_node = miner_node if miner_node else None
+        self.signature = signature
+        self.sender_public_key = sender_public_key  # Public key is now part of the transaction
 
     def to_dict(self):
         return {
@@ -18,20 +20,24 @@ class Transaction:
             "signature": self.signature.hex() if self.signature else None,
         }
 
-    def sign(self):
-        sender_bytes = self.sender if isinstance(self.sender, bytes) else self.sender.encode()
-        recipient_bytes = self.recipient if isinstance(self.recipient, bytes) else self.recipient.encode()
-        amount_bytes = str(self.amount).encode()
-        data_bytes = self.data if isinstance(self.data, bytes) else self.data.encode()
-
-        message = sender_bytes + recipient_bytes + amount_bytes + data_bytes
-        self.signature = self.miner_node.sign(message)
+    def sign(self, private_key):
+        transaction_hash = self.hash_transaction()
+        self.signature = private_key.sign(
+            transaction_hash.encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
 
     def verify(self):
-        sender_bytes = self.sender if isinstance(self.sender, bytes) else self.sender.encode()
-        recipient_bytes = self.recipient if isinstance(self.recipient, bytes) else self.recipient.encode()
-        amount_bytes = str(self.amount).encode()
-        data_bytes = self.data if isinstance(self.data, bytes) else self.data.encode()
+        if not self.sender_public_key:
+            raise ValueError("Sender public key not provided.")
+        transaction_hash = self.hash_transaction()
+        return self.sender_public_key.verify(
+            self.signature,
+            transaction_hash.encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
 
-        message = sender_bytes + recipient_bytes + amount_bytes + data_bytes
-        return self.miner_node.verify(message, self.signature)
+    def hash_transaction(self):
+        # Create a unique hash for a transaction
+        transaction_str = json.dumps(self.to_dict(), sort_keys=True)
+        return sha256(transaction_str.encode()).hexdigest()

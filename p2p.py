@@ -4,6 +4,7 @@ import time
 import threading
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 from transaction import Transaction
+from ssl import create_default_context, Purpose
 
 class P2PRequestHandler(BaseRequestHandler):
     MAX_REQUESTS_PER_MINUTE = 1000
@@ -47,15 +48,28 @@ class P2PNode:
         try:
             request_str = request.decode()
             print("Received request:", request_str)
-
             response = await self.process_request(request_str)
             return response.encode()
-
         except Exception as e:
-            print("An error occurred in the request handler:")
-            print(str(e))
-            traceback.print_exc()
+            print("Error handling request:", str(e))
             return "HTTP/1.1 500 Internal Server Error\r\n\r\n".encode()
+
+    async def start(self):
+        try:
+            ssl_context = create_default_context(Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile='path/to/certfile', keyfile='path/to/keyfile')
+            self.server = ThreadingTCPServer(self.server_address, P2PRequestHandler, bind_and_activate=False)
+            self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
+            self.server.server_bind()
+            self.server.server_activate()
+            self.running = True
+            print("Server started.")
+            server_thread = threading.Thread(target=self.server.serve_forever)
+            server_thread.start()
+        except ssl.SSLError as e:
+            print(f"SSL error occurred: {e}")
+        except Exception as e:
+            print("An error occurred in starting the server:", str(e))
 
     async def process_request(self, request):
         method, *headers_and_body = request.split('\r\n\r\n')
@@ -76,17 +90,3 @@ class P2PNode:
             return await self.full_chain()
 
         return "HTTP/1.1 404 Not Found\r\n\r\n"
-
-    async def start(self):
-        try:
-            self.running = True
-            print("Server started.")
-
-            self.server = ThreadingTCPServer(self.server_address, P2PRequestHandler)
-            self.server.node = self
-
-            server_thread = threading.Thread(target=self.server.serve_forever)
-            server_thread.start()
-
-        except Exception as e:
-            print("An error occurred in the server:", str(e))

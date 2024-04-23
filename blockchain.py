@@ -10,22 +10,30 @@ from datetime import datetime
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
 from transaction import Transaction
+from hashlib import sha256
+import logging
+from threading import Lock
+
+logging.basicConfig(level=logging.DEBUG)
 
 class Block:
-    def __init__(self, index, timestamp, transactions, previous_hash, nonce, validations=None, signature=None):
+    def __init__(self, index, timestamp, transactions, previous_hash, nonce):
         self.index = index
         self.timestamp = timestamp
         self.transactions = transactions
+        self.merkle_tree = MerkleTree(transactions)
         self.previous_hash = previous_hash
         self.nonce = nonce
-        self.validations = validations if validations else []
-        self.signature = signature if signature else b''
 
     def hash_block(self):
-        block_str = json.dumps(self.to_dict(), sort_keys=True)
-        digest = hashes.Hash(hashes.SHA256(), backend=default_backend())
-        digest.update(block_str.encode())
-        return digest.finalize().hex()
+        block_str = json.dumps({
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "merkle_root": self.merkle_tree.get_root(),
+            "previous_hash": self.previous_hash,
+            "nonce": self.nonce
+        }, sort_keys=True)
+        return sha256(block_str.encode()).hexdigest()
 
     def to_dict(self):
         return {
@@ -60,7 +68,10 @@ class Blockchain:
         return Block(0, time.time(), [], "0", 0)
 
     def add_transaction(self, transaction):
-        self.transactions.append(transaction)
+        if not transaction.verify():
+            raise ValueError("Transaction signature invalid.")
+        with self.chain_lock:
+            self.transactions.append(transaction)
 
         sender = transaction.sender
         recipient = transaction.recipient
@@ -73,6 +84,13 @@ class Blockchain:
         setattr(self.get_node_by_address(recipient), 'balance', recipient_balance + amount)
 
         return len(self.chain) + 1
+
+    def verify_transaction_signature(self, transaction):
+        return transaction.sender_public_key.verify(
+            transaction.signature,
+            transaction.hash_transaction().encode(),
+            ec.ECDSA(hashes.SHA256())
+        )
 
     def new_transaction(self, transaction):
         self.transactions.append(transaction)
@@ -124,35 +142,39 @@ class Blockchain:
             address = node.address
             balance = balances.get(address, 0)
             setattr(node, 'balance', balance)
+    
+    def create_block(self, nonce, previous_hash):
+        # Simplified creation of a block with provided nonce and previous_hash
+        return Block(len(self.chain), time.time(), self.transactions.copy(), previous_hash, nonce)
+
+    def validate_block(self, block):
+        # Implement basic validation: checking hash and if block is linked correctly
+        expected_difficulty = '0' * self.DIFFICULTY
+        return (block.hash_block()[:self.DIFFICULTY] == expected_difficulty and
+                block.previous_hash == self.chain[-1].hash_block())
+
+    def adjust_difficulty(self, last_block, current_time):
+        expected_time = 10 * 60  # 10 minutes
+        actual_time = current_time - last_block.timestamp
+        if actual_time < expected_time / 2:
+            self.DIFFICULTY += 1
+        elif actual_time > expected_time * 2:
+            self.DIFFICULTY = max(1, self.DIFFICULTY - 1)
 
     def mine_block(self):
-        try:
-            last_block = self.chain[-1]
-            index = last_block.index + 1
-            timestamp = time.time()
-            transactions = self.transactions.copy()
-            reward = self.calculate_reward()
-
-            transactions.append(Transaction(self.miner_node.address, self.miner_node.address, reward, "reward", miner_node=self.miner_node))
-            previous_hash = last_block.hash_block()
-
-            max_attempts = 1000
-            nonce = 0
-            while nonce < max_attempts:
-                block = Block(index, timestamp, transactions, previous_hash, nonce)
-                block_hash = block.hash_block()
-                if block_hash[:self.DIFFICULTY] == '0' * self.DIFFICULTY and self.node_validator.validate_block(block, self.nodes):
-                    self.chain.append(block)
-                    self.transactions = []
-                    return block
-                nonce += 1
-
-            return None
-
-        except Exception as e:
-            print("An error occurred while mining a new block:")
-            print(str(e))
-            traceback.print_exc()
+        last_block = self.chain[-1]
+        nonce = 0
+        current_time = time.time()
+        self.adjust_difficulty(last_block, current_time)
+        while nonce < 1000:
+            new_block = self.create_block(nonce, last_block.hash_block())
+            if self.validate_block(new_block):
+                self.chain.append(new_block)
+                self.transactions = []
+                logging.info(f"Block mined successfully: {new_block.hash_block()}")
+                return new_block
+            nonce += 1
+        logging.error("Failed to mine a new block.")
         return None
 
     def get_node_by_address(self, address):
@@ -195,3 +217,23 @@ class Blockchain:
 
     def __str__(self):
         return json.dumps([block.to_dict() for block in self.chain], indent=2)
+
+class MerkleTree:
+    def __init__(self, transactions):
+        self.transactions = transactions
+        self.root = self.build_merkle_tree(transactions)
+    
+    def build_merkle_tree(self, items):
+        # Handling building of Merkle tree even when the number of items is odd
+        if len(items) == 1:
+            return items[0]
+        new_level = []
+        for i in range(0, len(items) - 1, 2):
+            combined_hash = sha256((items[i] + items[i+1]).encode()).hexdigest()
+            new_level.append(combined_hash)
+        if len(items) % 2 == 1:
+            new_level.append(items[-1])  # Append the last hash if odd number of hashes
+        return self.build_merkle_tree(new_level)
+    
+    def get_root(self):
+        return self.root
