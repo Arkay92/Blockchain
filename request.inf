@@ -1,0 +1,32 @@
+[Version]
+Signature="$Windows NT$"
+
+[NewRequest]
+Subject = "CN=MySelfSignedCert, OU=MyUnit, O=MyOrg, L=MyCity, S=MyState, C=US"
+KeySpec = 1
+KeyLength = 2048
+Exportable = TRUE
+SMIME = False
+PrivateKeyArchive = FALSE
+UserProtected = FALSE
+UseExistingKeySet = FALSE
+ProviderName = "Microsoft RSA SChannel Cryptographic Provider"
+ProviderType = 12
+RequestType = Cert
+KeyUsage = 0xf0
+
+[EnhancedKeyUsageExtension]
+OID=1.3.6.1.5.5.7.3.1 ; Server Authentication
+OID=1.3.6.1.5.5.7.3.2 ; Client Authentication
+
+[Extensions]
+2.5.29.19 = "{text}"
+_continue_ = "critical, CA:TRUE"
+
+[Strings]
+szOID_ENHANCED_KEY_USAGE = "2.5.29.37"
+szOID_KEY_USAGE = "2.5.29.15"
+szOID_BASIC_CONSTRAINTS2 = "2.5.29.19"
+
+[RequestAttributes]
+CertificateTemplate = WebServer

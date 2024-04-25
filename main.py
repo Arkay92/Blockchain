@@ -5,110 +5,112 @@ import random
 from blockchain import Blockchain
 from transaction import Transaction
 from p2p import P2PNode
+import logging
 
-try:
-    blockchain = Blockchain()
-    print("Blockchain created")
-
-    # Start 25 nodes and fund them with 100 coins each
+def create_and_fund_nodes(blockchain, num_nodes=25, initial_funds=100):
     nodes = []
     miner_address = blockchain.add_node()  # Add the miner's address
-    for _ in range(25):
+    total_funding = num_nodes * initial_funds
+    blockchain.set_balance(miner_address, total_funding)  # Ensure miner has enough funds
+
+    for _ in range(num_nodes):
         address = blockchain.add_node()
         nodes.append(address)
-        transaction = Transaction(miner_address, address, 100, "Initial funds", miner_node=blockchain.miner_node)
-        transaction.sign()
-        blockchain.new_transaction(transaction)
+        transaction = Transaction(miner_address, address, initial_funds, "Initial funds")
+        blockchain.process_transaction(transaction)  # Process and record the transaction
+    return nodes
 
-    print("25 nodes created and funded.")
+def process_transaction(sender, recipient, amount, blockchain):
+    if amount <= 0:
+        print(f"Invalid transaction amount: {amount} must be positive.")
+        return False
+    if blockchain.get_balance(sender) < amount:
+        print(f"Transaction failed: {sender} has insufficient funds.")
+        return False
+    transaction = Transaction(sender, recipient, amount, "Transfer")
+    sender_node = blockchain.get_node_by_address(sender)
+    if not sender_node:
+        print(f"No node found for address {sender}.")
+        return False
+    sender_node.sign_transaction(transaction)
+    blockchain.new_transaction(transaction)
+    print(f"Transaction processed: {amount} from {sender} to {recipient}.")
+    return True
 
-    # Print balances of all nodes
+def print_balances(blockchain):
+    """Print balances in a more user-friendly manner."""
     balances = blockchain.get_balances()
-    print("Balances after funding:")
+    print("----------- Balances -----------")
     for address, balance in balances.items():
-        print(f"{address}: {balance}")
-    
-    async def start_server():
-        node = P2PNode(blockchain)
-        await node.start()
+        print(f"Address: {address}, Balance: {balance}")
+    print("--------------------------------")
 
-    thread = threading.Thread(target=lambda: asyncio.run(start_server()))
-    thread.start()
+async def start_p2p_server(blockchain):
+    node = P2PNode(blockchain)
+    await node.start()
+    await node.sync_blocks()  # Sync blocks after starting the P2P server
 
-    time.sleep(1)  # Wait for nodes to synchronize
-
-    # Each node sends a transaction to three random recipients
+def perform_transactions(blockchain, nodes):
     for sender in nodes:
-        recipient = random.choice(nodes)
-        if recipient != sender:
-            sender_address = sender
-            recipient_address = recipient
-            sender_balance = blockchain.get_balances().get(sender_address, 0)
-            print("Sender balance:", sender_balance)
-            if sender_balance >= 1:  # Check if sender has sufficient funds
-                print("Sender:", sender_address)
-                print("Recipient:", recipient_address)
-                transaction = Transaction(sender_address, recipient_address, 1, "Transaction", miner_node=blockchain.miner_node)
-                transaction.sign()
-                try:
-                    blockchain.new_transaction(transaction)
-                except Exception as e:
-                    print("An error occurred:", str(e))
-                    traceback.print_exc()
-            else:
-                print("Sender does not have sufficient funds to send the transaction.")
+        for _ in range(3):  # Each node sends a transaction to three different nodes
+            recipient = random.choice(nodes)
+            while recipient == sender:  # Ensure the recipient is not the sender
+                recipient = random.choice(nodes)
+            if process_transaction(sender, recipient, 1, blockchain):
+                print(f"Processed transaction from {sender} to {recipient}.")
 
-    # Start mining until three blocks are mined
-    for _ in range(3):
+def mine_blocks(blockchain, num_blocks=3):
+    for _ in range(num_blocks):
         block = blockchain.mine_block()
         if block:
             print("New block mined successfully.")
             print(f"Block hash: {block.hash_block()}")
         else:
             print("Failed to mine a new block.")
-            break
+            return
 
-    print("Three blocks mined successfully.")
+def main():
+    try:
+        blockchain = Blockchain()
+        blockchain.load_from_disk()  # Load blockchain state from disk
+        print("Blockchain loaded")
 
-    # Print balances of all nodes
-    balances = blockchain.get_balances()
-    print("Balances after all transactions:")
-    for address, balance in balances.items():
-        print(f"{address}: {balance}")
+        # Ensure the miner has enough initial funds
+        num_nodes = 25
+        initial_funds = 100
+        miner_initial_balance = num_nodes * initial_funds
+        miner_address = blockchain.add_node()  # Make sure the miner node is created first
+        blockchain.set_balance(miner_address, miner_initial_balance)  # Set the miner's initial balance
 
-    print("Printing the blockchain:")
-    print(blockchain)
+        nodes = create_and_fund_nodes(blockchain, num_nodes, initial_funds)
+        print(f"{len(nodes)} nodes created and funded.")
 
-    # Start mining until miner rewards reach 20 coins
-    while blockchain.get_balances()[blockchain.miner_node.address] < 20:
-        block = blockchain.mine_block()
-        if block:
-            print("New block mined successfully.")
-            print(f"Block hash: {block.hash_block()}")
-        else:
-            print("Failed to mine a new block.")
-            break
+        print_balances(blockchain)
 
-    print("Miner rewards reached 20 coins.")
+        thread = threading.Thread(target=lambda: asyncio.run(start_p2p_server(blockchain)))
+        thread.start()
+        time.sleep(1)  # Wait for nodes to synchronize
 
-    # Send 0.5 coins to every node from the miner
-    for recipient in nodes:
-        transaction = Transaction(blockchain.miner_node.address, str(recipient), 0.5, "Reward", miner_node=blockchain.miner_node)
-        transaction.sign()
-        blockchain.new_transaction(transaction)
+        perform_transactions(blockchain, nodes)
+        mine_blocks(blockchain)
 
-    print("Reward transactions sent to nodes.")
+        print_balances(blockchain)
 
-    time.sleep(1)  # Wait for transactions to be processed
+        # Continue mining until a certain condition is met (example: miner rewards reach 20 coins)
+        while blockchain.get_balances().get(blockchain.miner_node.address, 0) < 20:
+            mine_blocks(blockchain, 1)
 
-    # Print balances of all nodes
-    balances = blockchain.get_balances()
-    print("Balances after all transactions:")
-    for address, balance in balances.items():
-        print(f"{address}: {balance}")
+        print("Miner rewards reached 20 coins.")
+        print_balances(blockchain)
 
-    print("Printing the blockchain:")
-    print(blockchain)
+        print("Printing the blockchain:")
+        print(blockchain)
 
-except Exception as e:
-    print(f"An error occurred: {e}")
+        blockchain.save_to_disk()  # Save blockchain state to disk
+
+    except Exception as e:
+        logging.exception("An error occurred", exc_info=e)
+        raise
+
+if __name__ == '__main__':
+    main()

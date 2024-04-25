@@ -1,38 +1,42 @@
 from hashlib import sha256
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import serialization, hashes
+import json, base64
 
 class Transaction:
-    def __init__(self, sender, recipient, amount, data, signature=None, sender_public_key=None):
-        if any(param is None for param in [sender, recipient, amount, data]):
-            raise ValueError("Invalid transaction parameters")
+    def __init__(self, sender, recipient, amount, description, sender_private_key=None, sender_public_key=None):
         self.sender = sender
         self.recipient = recipient
-        self.amount = float(amount)
-        self.data = data
-        self.signature = signature
-        self.sender_public_key = sender_public_key  # Public key is now part of the transaction
+        self.amount = amount
+        self.signature = None 
+        self.description = description
+        self.sender_public_key = sender_public_key  # Public key is passed during transaction creation
+        if sender_private_key:
+            self.sign(sender_private_key)
+
+    def to_string(self):
+        # Create a string representation of the transaction, excluding the signature
+        return f"{self.sender}{self.recipient}{self.amount}{self.description}"
 
     def to_dict(self):
         return {
-            "sender": self.sender,
-            "recipient": self.recipient,
-            "amount": self.amount,
-            "data": self.data,
-            "signature": self.signature.hex() if self.signature else None,
+            'sender': self.sender,
+            'recipient': self.recipient,
+            'amount': self.amount,
+            'signature': base64.b64encode(self.signature).decode('utf-8') if self.signature else None,
+            "description": self.description,
         }
 
     def sign(self, private_key):
         """Sign the transaction with sender's private key."""
-        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount)
-        self.signature = private_key.sign(
-            transaction_data.encode(),
-            ec.ECDSA(hashes.SHA256())
-        )
+        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount) + self.description
+        self.signature = private_key.sign_transaction(transaction_data.encode())
 
     def verify_signature(self):
         """Verify the transaction signature with the sender's public key."""
-        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount)
+        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount) + self.description
         try:
-            self.sender_key.verify(
+            self.sender_public_key.verify(
                 self.signature,
                 transaction_data.encode(),
                 ec.ECDSA(hashes.SHA256())
@@ -41,7 +45,6 @@ class Transaction:
         except Exception:
             return False
 
-    def hash_transaction(self):
-        # Create a unique hash for a transaction
+    def hash(self):
         transaction_str = json.dumps(self.to_dict(), sort_keys=True)
         return sha256(transaction_str.encode()).hexdigest()
