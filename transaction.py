@@ -21,21 +21,25 @@ class Transaction:
         }
 
     def sign(self, private_key):
-        transaction_hash = self.hash_transaction()
+        """Sign the transaction with sender's private key."""
+        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount)
         self.signature = private_key.sign(
-            transaction_hash.encode(),
+            transaction_data.encode(),
             ec.ECDSA(hashes.SHA256())
         )
 
-    def verify(self):
-        if not self.sender_public_key:
-            raise ValueError("Sender public key not provided.")
-        transaction_hash = self.hash_transaction()
-        return self.sender_public_key.verify(
-            self.signature,
-            transaction_hash.encode(),
-            ec.ECDSA(hashes.SHA256())
-        )
+    def verify_signature(self):
+        """Verify the transaction signature with the sender's public key."""
+        transaction_data = str(self.sender) + str(self.recipient) + str(self.amount)
+        try:
+            self.sender_key.verify(
+                self.signature,
+                transaction_data.encode(),
+                ec.ECDSA(hashes.SHA256())
+            )
+            return True
+        except Exception:
+            return False
 
     def hash_transaction(self):
         # Create a unique hash for a transaction

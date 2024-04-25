@@ -56,14 +56,17 @@ class P2PNode:
 
     async def start(self):
         try:
-            ssl_context = create_default_context(Purpose.CLIENT_AUTH)
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ssl_context.load_cert_chain(certfile='path/to/certfile', keyfile='path/to/keyfile')
+            ssl_context.load_verify_locations('path/to/cacert.pem')
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+
             self.server = ThreadingTCPServer(self.server_address, P2PRequestHandler, bind_and_activate=False)
             self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
             self.server.server_bind()
             self.server.server_activate()
             self.running = True
-            print("Server started.")
+            logging.info("Secure P2P server started with mutual TLS")
             server_thread = threading.Thread(target=self.server.serve_forever)
             server_thread.start()
         except ssl.SSLError as e:

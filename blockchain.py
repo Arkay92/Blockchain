@@ -39,7 +39,7 @@ class Block:
         return {
             "index": self.index,
             "timestamp": self.timestamp,
-            "transactions": [transaction.to_dict() for transaction in self.transactions],
+            "transactions": [transaction.to_dict() for transaction in self.get_next_transactions_for_block()],
             "previous_hash": self.previous_hash,
             "nonce": self.nonce,
             "validations": self.validations,
@@ -55,9 +55,24 @@ class Blockchain:
     def __init__(self):
         self.chain = [self.create_genesis_block()]
         self.transactions = []
+        self.pending_transactions = []
+        self.transaction_queue = []  # Initializing the transaction queue
         self.node_validator = NodeValidator()
         self.nodes = []
         self.miner_node = Node(self.add_node())
+
+    def add_to_transaction_queue(self, transaction):
+        from heapq import heappush
+        # Assuming transaction fee is a property of transaction. Adjust accordingly.
+        heappush(self.transaction_queue, (-transaction.fee, transaction))
+
+    def get_next_transactions_for_block(self):
+        from heapq import heappop
+        transactions_for_block = []
+        while self.transaction_queue and len(transactions_for_block) < 10:  # Example limit for block size
+            _, transaction = heappop(self.transaction_queue)
+            transactions_for_block.append(transaction)
+        return transactions_for_block
 
     def calculate_reward(self):
         current_year = datetime.now().year
@@ -66,13 +81,31 @@ class Blockchain:
 
     def create_genesis_block(self):
         return Block(0, time.time(), [], "0", 0)
+        
+    def is_transaction_valid(self, transaction):
+            if transaction.amount <= 0:
+                logging.error("Transaction amount must be positive")
+                return False
+            if transaction.sender == transaction.recipient:
+                logging.error("Sender and recipient cannot be the same")
+                return False
+            return True
 
     def add_transaction(self, transaction):
-        if not transaction.verify():
-            raise ValueError("Transaction signature invalid.")
-        with self.chain_lock:
-            self.transactions.append(transaction)
+        # Perform thorough validation beyond just signature verification
+        if not self.is_transaction_valid(transaction):
+            logging.error("Invalid transaction rejected")
+            return None
+        if transaction.verify_signature():
+            with self.chain_lock:
+                self.transactions.append(transaction)
+                self.add_to_transaction_queue(transaction)
+                logging.info("Transaction added to the queue")
+        else:
+            logging.error("Failed to verify transaction signature")
+            return None
 
+        # Adjusting balances after validating the transaction
         sender = transaction.sender
         recipient = transaction.recipient
         amount = transaction.amount
@@ -85,12 +118,13 @@ class Blockchain:
 
         return len(self.chain) + 1
 
-    def verify_transaction_signature(self, transaction):
-        return transaction.sender_public_key.verify(
-            transaction.signature,
-            transaction.hash_transaction().encode(),
-            ec.ECDSA(hashes.SHA256())
-        )
+    def verify_transaction_signature(self, transaction):public_key = transaction.sender_public_key
+        transaction_data = transaction.to_string()
+        signature = transaction.signature
+        try:
+            return public_key.verify(signature, transaction_data.encode(), ec.ECDSA(hashes.SHA256()))
+        except InvalidSignature:
+            return None
 
     def new_transaction(self, transaction):
         self.transactions.append(transaction)
@@ -144,8 +178,17 @@ class Blockchain:
             setattr(node, 'balance', balance)
     
     def create_block(self, nonce, previous_hash):
-        # Simplified creation of a block with provided nonce and previous_hash
-        return Block(len(self.chain), time.time(), self.transactions.copy(), previous_hash, nonce)
+        """Create a new block using Penrose tiling entropy for additional security in block hash."""
+        entropy_seed = Node().generate_entropy_based_seed()  # Assuming Node class has this method
+        block_data = {
+            "nonce": nonce,
+            "previous_hash": previous_hash,
+            "transactions": [tx.to_dict() for tx in self.get_next_transactions_for_block()],
+            "entropy_seed": entropy_seed.hex()  # Including entropy in the block
+        }
+        block_str = json.dumps(block_data, sort_keys=True)
+        block_hash = sha256(block_str.encode()).hexdigest()
+        return Block(len(self.chain), time.time(), self.transactions.copy(), previous_hash, nonce, block_hash)
 
     def validate_block(self, block):
         # Implement basic validation: checking hash and if block is linked correctly
@@ -162,20 +205,47 @@ class Blockchain:
             self.DIFFICULTY = max(1, self.DIFFICULTY - 1)
 
     def mine_block(self):
+        if not self.pending_transactions:
+            logging.error("No transactions to mine.")
+            return None
         last_block = self.chain[-1]
         nonce = 0
         current_time = time.time()
-        self.adjust_difficulty(last_block, current_time)
-        while nonce < 1000:
+        self.adjust_difficulty(last_block, current_time)  # Adjust difficulty based on time to mine the last block
+
+        while nonce < 1000:  # Limiting the nonce iterations for demonstration; adjust as necessary for production
             new_block = self.create_block(nonce, last_block.hash_block())
-            if self.validate_block(new_block):
+            if self.validate_block(new_block, self.DIFFICULTY):  # Validation includes checking the difficulty level
                 self.chain.append(new_block)
-                self.transactions = []
+                self.transactions = []  # Clear the list of transactions after they are added to a block
                 logging.info(f"Block mined successfully: {new_block.hash_block()}")
                 return new_block
             nonce += 1
         logging.error("Failed to mine a new block.")
         return None
+
+    def valid_proof(self, last_hash, nonce, difficulty=None):
+        """Validates the proof by checking if the hash of the last hash and nonce has the correct number of leading zeros."""
+        difficulty = difficulty or self.DIFFICULTY
+        guess = f'{last_hash}{nonce}'.encode()
+        guess_hash = hashlib.sha256(guess).hexdigest()
+        return guess_hash[:difficulty] == '0' * difficulty
+
+    def validate_block(self, block, difficulty):
+        """Validates the block by confirming if it meets the difficulty requirements."""
+        guess = f'{block.previous_hash}{block.nonce}'.encode()
+        guess_hash = hashlib.sha256(guess).hexdigest()
+        return guess_hash[:difficulty] == '0' * difficulty
+
+    def adjust_difficulty(self, last_block, current_time):
+        """Adjusts the mining difficulty based on the rate at which the previous block was mined."""
+        expected_time = 10 * 60  # Target time to mine a block is 10 minutes
+        actual_time = current_time - last_block.timestamp
+        if actual_time < expected_time / 2:
+            self.DIFFICULTY += 1  # Increase difficulty if block was mined too quickly
+        elif actual_time > expected_time * 2:
+            self.DIFFICULTY = max(1, self.DIFFICULTY - 1)  # Decrease difficulty if block took too long to mine
+        logging.info(f"Difficulty adjusted to {self.DIFFICULTY}")
 
     def get_node_by_address(self, address):
         for node in self.nodes:
