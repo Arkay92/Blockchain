@@ -5,6 +5,7 @@ import requests
 import sys
 import uuid
 import traceback
+import threading
 from node import NodeValidator, Node
 from datetime import datetime
 from cryptography.hazmat.primitives import hashes
@@ -25,9 +26,7 @@ class Block:
         self.merkle_tree = MerkleTree(transactions)
         self.previous_hash = previous_hash
         self.nonce = nonce
-        self.hash = self.hash_block()  # Calculate hash based on current state
-        self.signature = None
-        self.validations = []
+        self.hash = self.hash_block()  # This properly calls the method to initialize the hash
 
     def hash_block(self):
         block_str = json.dumps({
@@ -43,45 +42,85 @@ class Block:
         return {
             "index": self.index,
             "timestamp": self.timestamp,
-            "transactions": [transaction.to_dict() for transaction in self.transactions],
+            "transactions": [tx.to_dict() for tx in self.transactions],
             "previous_hash": self.previous_hash,
             "nonce": self.nonce,
-            "hash": self.hash
+            "hash": self.hash  # Use the hash attribute, not the hash_block method
         }
 
 class Blockchain:
     BASE_REWARD = 50
     BASE_YEAR = 2023
     HALVING_FREQUENCY = 4
-    DIFFICULTY = 1
+    DIFFICULTY = 2
 
     def __init__(self):
-        self.chain = [self.create_genesis_block()]
+        self.node_validator = NodeValidator()
+        self.nodes = []
+        self.current_transactions = []
         self.transactions = []
         self.pending_transactions = []
         self.transaction_queue = []  # Initializing the transaction queue
-        self.node_validator = NodeValidator()
-        self.nodes = []
-        self.miner_node = Node(self.add_node())
         self.balances = {}  # Stores the balance for each node address
-    
-    def add_node(self):
-        node = Node()
-        self.nodes[node.address] = node
-        self.balances[node.address] = 0  # Initialize node balance
-        return node.address
+        self.balances_lock = threading.Lock()
+        self.transactions_lock = threading.Lock()
+        
+        # Initialize the miner node first
+        self.miner_node = Node(str(uuid.uuid4()))  # or some other unique identifier
+        self.nodes.append(self.miner_node)  # Add the miner node to the list of nodes
+        
+        # Now that we have the miner node, we can create the genesis block
+        self.chain = [self.create_genesis_block()]
 
     def get_balance(self, address):
         return self.balances.get(address, 0)
 
+    def is_valid_chain(self, chain):
+        if not chain:
+            return False
+        for i in range(1, len(chain)):
+            if not self.is_valid_proof(chain[i-1], chain[i].nonce) or \
+            chain[i].previous_hash != chain[i-1].hash:
+                return False
+        return True
+
+    def check_double_spending(self, transaction):
+        # Check if transaction is already in the current transactions
+        for tx in self.current_transactions:
+            if tx.sender == transaction.sender and tx.recipient == transaction.recipient and tx.amount == transaction.amount:
+                return True
+        return False
+
+    def proof_of_work(self, last_block):
+        nonce = 0
+        while not self.is_valid_proof(last_block, nonce):
+            nonce += 1
+        return nonce
+    
+    def is_valid_proof(self, last_block, nonce):
+        guess_hash = sha256(f'{last_block.hash}{nonce}'.encode()).hexdigest()
+        return guess_hash[:self.difficulty] == '0' * self.difficulty
+
+    def add_block(self, block):
+        with self.chain_lock:
+            if block.previous_hash != self.chain[-1].calculate_hash():
+                return False
+            if not self.is_valid_proof(block, block.nonce):
+                return False
+            self.chain.append(block)
+            self.current_transactions = []
+            return True
+
     def set_balance(self, address, amount):
-        self.balances[address] = amount
+        with self.balances_lock:
+            self.balances[address] = amount
 
     def adjust_balance(self, address, amount):
-        if address in self.balances:
-            self.balances[address] += amount
-        else:
-            self.balances[address] = amount
+        with self.balances_lock:
+            if address in self.balances:
+                self.balances[address] = self.balances.get(address, 0) + amount
+            else:
+                self.balances[address] = amount
 
     def get_node_by_address(self, address):
         return self.nodes.get(address)
@@ -104,8 +143,21 @@ class Blockchain:
         elapsed_years = current_year - self.BASE_YEAR
         return self.BASE_REWARD / (2 ** (elapsed_years // self.HALVING_FREQUENCY))
 
+    def distribute_initial_funds(self, amount_per_node):
+        miner_balance = self.get_balance(self.miner_node.address)
+        if miner_balance < amount_per_node * len(self.nodes):
+            print("Not enough balance to distribute")
+            return False
+        for node in self.nodes:
+            if node.address != self.miner_node.address:
+                transaction = Transaction(self.miner_node.address, node.address, amount_per_node, "Initial Distribution")
+                self.process_transaction(transaction)
+        return True
+
     def create_genesis_block(self):
-        return Block(0, time.time(), [], "0", 0)
+        # Creating initial transactions distributing funds to a central account
+        initial_transactions = [Transaction("system", self.miner_node.address, 10000, "Genesis Block Reward")]
+        return Block(0, time.time(), initial_transactions, "0", 0)
         
     def is_transaction_valid(self, transaction):
             if transaction.amount <= 0:
@@ -116,34 +168,24 @@ class Blockchain:
                 return False
             return True
 
-    def add_node(self):
-        node = Node()
-        self.nodes[node.address] = node
-        return node.address
-
     def add_transaction(self, transaction):
-        try:
-            if not self.is_transaction_valid(transaction):
-                logging.error("Invalid transaction: %s", transaction)
-                return None
-            
-            if not transaction.verify_signature():
-                logging.error("Failed to verify transaction signature: %s", transaction)
-                return None
-
-            # Add transaction to the transaction pool
-            with self.chain_lock:
-                self.transactions.append(transaction)
-                self.add_to_transaction_queue(transaction)
-                logging.info("Transaction added to the queue: %s", transaction)
-            
-            # Adjust balances
-            self.adjust_balances(transaction)
-
-            return len(self.chain) + 1
-        except Exception as e:
-            logging.exception("Error adding transaction: %s", e)
+        """Add a new transaction to the blockchain after validation."""
+        if not self.is_transaction_valid(transaction):
+            logging.error(f"Invalid transaction: {transaction}")
             return None
+        
+        if not self.verify_transaction_signature(transaction):
+            logging.error(f"Failed to verify transaction signature: {transaction}")
+            return None
+
+        with self.transactions_lock:
+            self.transactions.append(transaction)
+            self.current_transactions.append(transaction)
+            self.add_to_transaction_queue(transaction)
+            self.adjust_balances(transaction)
+        
+        logging.info(f"Transaction added to the queue: {transaction}")
+        return len(self.chain) + 1
 
     def adjust_balances(self, transaction):
         # Adjust sender and recipient balances
@@ -158,13 +200,20 @@ class Blockchain:
         setattr(self.get_node_by_address(recipient), 'balance', recipient_balance + amount)
 
     def verify_transaction_signature(self, transaction):
-        public_key = transaction.sender_public_key
-        transaction_data = transaction.to_string()
-        signature = transaction.signature
+        """Verify the signature of the transaction."""
         try:
-            return public_key.verify(signature, transaction_data.encode(), ec.ECDSA(hashes.SHA256()))
-        except InvalidSignature:
-            return None
+            transaction.sender_public_key.verify(
+                transaction.signature,
+                transaction.to_string().encode(),
+                ec.ECDSA(hashes.SHA256())
+            )
+            return True
+        except cryptography.exceptions.InvalidSignature:
+            logging.error("Signature verification failed")
+            return False
+        except Exception as e:
+            logging.error(f"Unexpected error during signature verification: {str(e)}")
+            return False
 
     def new_transaction(self, transaction):
         if self.is_transaction_valid(transaction):
@@ -176,13 +225,11 @@ class Blockchain:
             logging.error("Failed to add invalid transaction.")
             return None
 
-    def is_transaction_valid(self, transaction):
-        if transaction.amount <= 0 or transaction.sender == transaction.recipient:
-            return False
-        if self.get_balance(transaction.sender) < transaction.amount:
-            return False
-        # Additional checks can be added here
-        return True
+    def mine(self):
+        last_block = self.chain[-1]
+        nonce = self.proof_of_work(last_block)
+        new_block = Block(len(self.chain), time.time(), self.current_transactions, last_block.hash, nonce)
+        return self.add_block(new_block)
 
     def add_node(self, address=None):
         if address is None:
@@ -254,14 +301,6 @@ class Blockchain:
         """Validates the block by confirming if it meets the difficulty requirements."""
         return self.valid_proof(block.previous_hash, block.nonce, self.DIFFICULTY)
 
-    def adjust_difficulty(self, last_block, current_time):
-        expected_time = 10 * 60  # 10 minutes
-        actual_time = current_time - last_block.timestamp
-        if actual_time < expected_time / 2:
-            self.DIFFICULTY += 1
-        elif actual_time > expected_time * 2:
-            self.DIFFICULTY = max(1, self.DIFFICULTY - 1)
-
     def process_transaction(self, transaction):
         if not self.is_transaction_valid(transaction):
             return False
@@ -288,6 +327,15 @@ class Blockchain:
         logging.error("Failed to mine a new block.")
         return None
 
+    def start_blockchain(self):
+        # Create genesis block with initial funds
+        self.chain.append(self.create_genesis_block())
+        # Mine some initial blocks to build up additional rewards
+        for _ in range(10):  # Mines 10 blocks
+            self.mine_block()
+        # Distribute funds from miner to other nodes
+        self.distribute_initial_funds(100)  # Example: distribute 100 units to each node
+
     def save_to_disk(self, filename='blockchain.json'):
         with open(filename, 'w') as file:
             json.dump([block.to_dict() for block in self.chain], file)
@@ -299,7 +347,7 @@ class Blockchain:
                 # Load blockchain state from the file
         except FileNotFoundError:
             logging.warning("Blockchain file not found. Creating a new blockchain.")
-            self.chain = [self.create_genesis_block()]  # Create a new blockchain
+            start_blockchain()
         except Exception as e:
             logging.error("An error occurred while loading blockchain from disk: %s", e)
 
@@ -320,22 +368,29 @@ class Blockchain:
         return None
 
     def resolve_conflicts(self):
+        """
+        Resolves conflicts by replacing the chain with the longest one in the network.
+        """
         longest_chain = None
         max_length = len(self.chain)
 
         for node in self.nodes:
-            response = requests.get(f'http://{node.address}/blocks')
+            try:
+                response = requests.get(f'http://{node.address}/blocks')
+                if response.status_code == 200:
+                    length = response.json()['length']
+                    chain = response.json()['chain']
 
-            if response.status_code == 200:
-                length = response.json()['length']
-                chain = response.json()['chain']
-
-                if length > max_length and self.is_valid(chain):
-                    max_length = length
-                    longest_chain = chain
+                    # Only replace if the new chain is longer and valid
+                    if length > max_length and self.is_valid(chain):
+                        max_length = length
+                        longest_chain = chain
+            except requests.RequestException as e:
+                logging.error(f"Network error when contacting node {node.address}: {str(e)}")
 
         if longest_chain:
             self.chain = longest_chain
+            logging.info("Blockchain replaced by a longer chain")
             return True
 
         return False
@@ -350,9 +405,6 @@ class Blockchain:
             if current_block.previous_hash != previous_block.hash_block():
                 return False
         return True
-
-    def __str__(self):
-        return json.dumps([block.to_dict() for block in self.chain], indent=2)
 
 class MerkleTree:
     def __init__(self, transactions):

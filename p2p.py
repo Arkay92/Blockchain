@@ -48,20 +48,17 @@ class P2PNode:
         self.server = None
 
     async def sync_blocks(self):
-        try:
-            for peer_address in self.peers:
+        for peer_address in self.peers:
+            try:
                 response = await self.request_blocks(peer_address)
-                if response.status_code == 200:
+                if response and response.status_code == 200:
                     blocks = response.json().get('blocks', [])
                     for block_data in blocks:
                         block = Block(**block_data)
                         if self.blockchain.validate_block(block):
-                            self.blockchain.chain.append(block)
-                            logging.info("Block added to local blockchain: %s", block)
-                        else:
-                            logging.error("Received invalid block from peer: %s", block)
-        except Exception as e:
-            logging.error("Error syncing blocks: %s", e)
+                            self.blockchain.add_block(block)
+            except Exception as e:
+                logging.error("Error syncing with peer %s: %s", peer_address, str(e))
     
     async def request_blocks(self, peer_address):
         try:

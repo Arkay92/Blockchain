@@ -8,16 +8,13 @@ import time
 import logging
 from utils import start_p2p_server, process_transaction
 
-def create_and_fund_nodes(blockchain, num_nodes=25, initial_funds=100):
+def create_and_fund_nodes(main_address, blockchain, num_nodes=25, initial_funds=100):
     nodes = []
-    miner_address = blockchain.add_node()
-    total_funding = num_nodes * initial_funds
-    blockchain.set_balance(miner_address, total_funding)
 
     for _ in range(num_nodes):
         address = blockchain.add_node()
         nodes.append(address)
-        transaction = Transaction(miner_address, address, initial_funds, "Initial funds")
+        transaction = Transaction(main_address, address, initial_funds, "Initial funds")
         blockchain.process_transaction(transaction)
     return nodes
 
@@ -80,11 +77,8 @@ def main():
 
         num_nodes = 25
         initial_funds = 100
-        miner_initial_balance = num_nodes * initial_funds
-        miner_address = blockchain.add_node()
-        blockchain.set_balance(miner_address, miner_initial_balance)
 
-        nodes = create_and_fund_nodes(blockchain, num_nodes, initial_funds)
+        nodes = create_and_fund_nodes(blockchain.miner_node.address, blockchain, num_nodes, initial_funds)
         print(f"{len(nodes)} nodes created and funded.")
 
         print_balances(blockchain)

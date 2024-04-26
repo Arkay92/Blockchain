@@ -9,6 +9,7 @@ class Node:
     def __init__(self, address=None):
         self.address = address if address else str(uuid.uuid4())
         self.private_key, self.public_key = self.generate_keys_using_penrose()
+        self.neighbors = []
 
     def generate_keys_using_penrose(self):
         """Generate ECDSA key pair using Penrose tiling entropy."""
@@ -43,6 +44,22 @@ class Node:
         if transaction.amount < 0:
             raise ValueError("Invalid transaction amount: cannot be negative.")
         print("Transaction audited and approved.")
+    
+    def sync_with_network(self):
+        for node in self.neighbors:
+            # Assuming a method to fetch the chain from a neighbor
+            node_chain = node.blockchain.chain
+            if len(node_chain) > len(self.blockchain.chain) and self.validate_chain(node_chain):
+                self.blockchain.chain = node_chain.copy()
+
+    def validate_chain(self, chain):
+        # Validate the entire blockchain
+        for i in range(1, len(chain)):
+            if chain[i].previous_hash != chain[i-1].calculate_hash():
+                return False
+            if not self.blockchain.is_valid_proof(chain[i-1], chain[i].nonce):
+                return False
+        return True
 
 class NodeValidator:
     def __init__(self):
