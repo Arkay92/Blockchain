@@ -35,15 +35,7 @@ class Transaction:
     def verify_signature(self):
         """Verify the transaction signature with the sender's public key."""
         transaction_data = str(self.sender) + str(self.recipient) + str(self.amount) + self.description
-        try:
-            self.sender_public_key.verify(
-                self.signature,
-                transaction_data.encode(),
-                ec.ECDSA(hashes.SHA256())
-            )
-            return True
-        except Exception:
-            return False
+        _verify_signature(self.sender_public_key, self.signature, transaction_data.encode())
 
     def hash(self):
         transaction_str = json.dumps(self.to_dict(), sort_keys=True)
