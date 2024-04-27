@@ -95,6 +95,26 @@ class P2PNode:
             # Handle new block
             await self.handle_new_block(data, websocket)
 
+    def broadcast_transaction(self, transaction):
+        for peer in self.peers:
+            try:
+                # Send transaction to peer
+                requests.post(f'http://{peer}/transactions/new', json=transaction.to_dict())
+            except Exception as e:
+                logging.error("Failed to send transaction to peer %s: %s", peer, str(e))
+
+    async def sync_transaction_pool(self):
+        for peer in self.peers:
+            try:
+                response = requests.get(f'http://{peer}/transactions/pool')
+                if response.status_code == 200:
+                    transactions = [Transaction.from_json(tx) for tx in response.json()['transactions']]
+                    for tx in transactions:
+                        if not any(tx.id == existing_tx.id for existing_tx in self.transaction_pool.transactions):
+                            self.add_transaction_to_pool(tx)
+            except Exception as e:
+                logging.error("Failed to synchronize transaction pool from peer %s: %s", peer, str(e))
+
     async def handle_new_transaction(self, data, websocket):
         try:
             transaction_data = data['data']  # Assuming 'data' contains transaction information
@@ -106,6 +126,11 @@ class P2PNode:
                 await self.broadcast(json.dumps({"type": "new_transaction", "data": transaction_data}))
                 # Send a success response back to the sender
                 await websocket.send(json.dumps({"status": "success", "message": "Transaction added to the pending pool"}))
+
+                if self.node.add_transaction_to_pool(transaction):
+                    return "HTTP/1.1 200 OK\\r\\n\\r\\nTransaction added."
+                else:
+                    return "HTTP/1.1 400 Bad Request\\r\\n\\r\\nTransaction validation failed."
             else:
                 # If the transaction is invalid, reject it and send an error response back to the sender
                 await websocket.send(json.dumps({"status": "error", "message": "Invalid transaction"}))

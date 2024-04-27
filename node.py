@@ -4,12 +4,14 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 import hashlib, secrets
 import uuid
+from transaction import TransactionPool
 
 class Node:
     def __init__(self, address=None):
         self.address = address if address else str(uuid.uuid4())
         self.private_key, self.public_key = self.generate_keys_using_penrose()
         self.neighbors = []
+        self.transaction_pool = TransactionPool()  # Initialize the transaction pool
 
     def generate_keys_using_penrose(self):
         """Generate ECDSA key pair using Penrose tiling entropy."""
@@ -38,6 +40,11 @@ class Node:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
+
+    def add_transaction_to_pool(self, transaction):
+        if transaction.is_valid(self.get_balance, self.check_double_spending):
+            self.transaction_pool.add_transaction(transaction)
+            self.broadcast_transaction(transaction)
         
     def audit_transaction(self, transaction):
         """Placeholder for auditing logic; in real-world, include compliance checks."""

@@ -3,14 +3,38 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
 import json, base64
 
+# Transaction Pool to hold unconfirmed transactions
+class TransactionPool:
+    def __init__(self):
+        self.transactions = []
+
+    def add_transaction(self, transaction):
+        self.transactions.append(transaction)
+
+    def sort_transactions_by_fee(self):
+        self.transactions.sort(key=lambda x: x.fee, reverse=True)
+
+    def remove_transactions(self, transactions):
+        for transaction in transactions:
+            if transaction in self.transactions:
+                self.transactions.remove(transaction)
+
+    def pick_transaction(self):
+        # Sort transactions by fee or any other criteria
+        self.transactions.sort(key=lambda x: -x.fee)
+        if self.transactions:
+            return self.transactions.pop(0)
+        return None
+
 class Transaction:
-    def __init__(self, sender, recipient, amount, description, sender_private_key=None, sender_public_key=None, signature=None):
+    def __init__(self, sender, recipient, amount, description, fee, sender_private_key=None, sender_public_key=None, signature=None):
         self.sender = sender
         self.recipient = recipient
         self.amount = amount
         self.signature = signature 
         self.description = description
         self.sender_public_key = sender_public_key  # Public key is passed during transaction creation
+        self.fee = fee
         if sender_private_key:
             self.sign(sender_private_key)
 

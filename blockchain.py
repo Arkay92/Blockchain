@@ -14,6 +14,7 @@ from transaction import Transaction
 from hashlib import sha256
 import logging
 from threading import Lock
+from transaction import TransactionPool
 import hashlib, secrets
 
 logging.basicConfig(level=logging.DEBUG)
@@ -64,6 +65,7 @@ class Blockchain:
         self.balances = {}  # Stores the balance for each node address
         self.balances_lock = threading.Lock()
         self.transactions_lock = threading.Lock()
+        self.transaction_pool = TransactionPool() 
         
         # Initialize the miner node first
         self.miner_node = Node(str(uuid.uuid4()))  # or some other unique identifier
@@ -150,13 +152,14 @@ class Blockchain:
             return False
         for node in self.nodes:
             if node.address != self.miner_node.address:
-                transaction = Transaction(self.miner_node.address, node.address, amount_per_node, "Initial Distribution")
+                transaction = Transaction(self.miner_node.address, node.address, amount_per_node, "Initial Distribution", 1)
+                self.transaction_pool.add_transaction(transaction)
                 self.process_transaction(transaction)
         return True
 
     def create_genesis_block(self):
         # Creating initial transactions distributing funds to a central account
-        initial_transactions = [Transaction("system", self.miner_node.address, 10000, "Genesis Block Reward")]
+        initial_transactions = [Transaction("system", self.miner_node.address, 10000, "Genesis Block Reward", 1)]
         return Block(0, time.time(), initial_transactions, "0", 0)
         
     def is_transaction_valid(self, transaction):
@@ -170,21 +173,22 @@ class Blockchain:
 
     def add_transaction(self, transaction):
         """Add a new transaction to the blockchain after validation."""
-        if not self.is_transaction_valid(transaction):
-            logging.error(f"Invalid transaction: {transaction}")
-            return None
-        
-        if not self.verify_transaction_signature(transaction):
-            logging.error(f"Failed to verify transaction signature: {transaction}")
-            return None
 
         with self.transactions_lock:
+            if not self.is_transaction_valid(transaction):
+                logging.error(f"Invalid transaction: {transaction}")
+                return None
+            
+            if not self.verify_transaction_signature(transaction):
+                logging.error(f"Failed to verify transaction signature: {transaction}")
+                return None
+
             self.transactions.append(transaction)
             self.current_transactions.append(transaction)
-            self.add_to_transaction_queue(transaction)
+            self.transaction_pool.add_transaction(transaction)
             self.adjust_balances(transaction)
         
-        logging.info(f"Transaction added to the queue: {transaction}")
+        logging.info(f"Transaction added to the pool: {transaction}")
         return len(self.chain) + 1
 
     def adjust_balances(self, transaction):
@@ -215,11 +219,22 @@ class Blockchain:
             logging.error(f"Unexpected error during signature verification: {str(e)}")
             return False
 
+    def get_next_transactions_for_block(self):
+        transactions_for_block = []
+        while self.transaction_pool.transactions and len(transactions_for_block) < 10:  # Example block size limit
+            transaction = self.transaction_pool.pick_transaction()  # Pick transaction based on criteria, e.g., fee
+            if self.is_transaction_valid(transaction):
+                transactions_for_block.append(transaction)
+            else:
+                logging.error("Invalid transaction removed from pool")
+        return transactions_for_block
+
     def new_transaction(self, transaction):
         if self.is_transaction_valid(transaction):
             self.transactions.append(transaction)
             self.adjust_balance(transaction.sender, -transaction.amount)
             self.adjust_balance(transaction.recipient, transaction.amount)
+            self.transaction_pool.add_transaction(transaction)
             return len(self.chain) + 1
         else:
             logging.error("Failed to add invalid transaction.")
@@ -320,6 +335,7 @@ class Blockchain:
             if self.validate_block(new_block):
                 self.chain.append(new_block)
                 self.set_balance(self.miner_node.address, self.calculate_reward())  # Reward the miner
+                self.transaction_pool.remove_transactions(self.transactions)  
                 self.transactions = []
                 logging.info(f"Block mined successfully: {new_block.hash_block()}")
                 return new_block

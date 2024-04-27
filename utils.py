@@ -20,7 +20,7 @@ def process_transaction(sender, recipient, amount, blockchain):
     if blockchain.get_balance(sender) < amount:
         print(f"Transaction failed: {sender} has insufficient funds.")
         return False
-    transaction = Transaction(sender, recipient, amount, "Transfer")
+    transaction = Transaction(sender, recipient, amount, "Transfer", 1)
     sender_node = blockchain.get_node_by_address(sender)
     if not sender_node:
         print(f"No node found for address {sender}.")
