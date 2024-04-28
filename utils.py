@@ -1,12 +1,9 @@
-import asyncio
-import random
 from blockchain import Blockchain
 from transaction import Transaction
 from p2p import P2PNode
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import hashes
 from hashlib import sha256
-import json
 
 async def start_p2p_server(blockchain):
     node = P2PNode(blockchain)

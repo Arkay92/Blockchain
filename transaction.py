@@ -1,40 +1,46 @@
 from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
-import json, base64
+import json, time
 
 # Transaction Pool to hold unconfirmed transactions
 class TransactionPool:
     def __init__(self):
         self.transactions = []
+        self.transaction_map = {}
 
     def add_transaction(self, transaction):
+        if transaction.hash() in self.transaction_map:
+            return False  # Avoid duplicate transactions
         self.transactions.append(transaction)
-
-    def sort_transactions_by_fee(self):
-        self.transactions.sort(key=lambda x: x.fee, reverse=True)
+        self.transaction_map[transaction.hash()] = transaction
+        self.transactions.sort(key=lambda x: (-x.fee, x.timestamp))  # Higher fees and older transactions have priority
 
     def remove_transactions(self, transactions):
         for transaction in transactions:
-            if transaction in self.transactions:
+            if transaction.hash() in self.transaction_map:
                 self.transactions.remove(transaction)
+                del self.transaction_map[transaction.hash()]
 
     def pick_transaction(self):
-        # Sort transactions by fee or any other criteria
-        self.transactions.sort(key=lambda x: -x.fee)
         if self.transactions:
-            return self.transactions.pop(0)
+            transaction = self.transactions.pop(0)
+            del self.transaction_map[transaction.hash()]
+            return transaction
         return None
 
 class Transaction:
-    def __init__(self, sender, recipient, amount, description, fee, sender_private_key=None, sender_public_key=None, signature=None):
+    def __init__(self, sender, recipient, amount, description, fee, data="", contract_code="", sender_private_key=None, sender_public_key=None, signature=None):
         self.sender = sender
         self.recipient = recipient
         self.amount = amount
         self.signature = signature 
         self.description = description
         self.sender_public_key = sender_public_key  # Public key is passed during transaction creation
+        self.timestamp = time.time()
         self.fee = fee
+        self.data = data
+        self.contract_code = contract_code
         if sender_private_key:
             self.sign(sender_private_key)
 

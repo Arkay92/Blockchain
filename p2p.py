@@ -1,13 +1,8 @@
 
-import asyncio
-import time
-import threading
+import asyncio, time, threading, logging, ssl, requests, websockets
 from socketserver import BaseRequestHandler, ThreadingTCPServer
 from transaction import Transaction
-from ssl import create_default_context, Purpose
-import ssl
-import requests
-import websockets
+from ssl import create_default_context, CERT_REQUIRED, Purpose
 
 class P2PRequestHandler(BaseRequestHandler):
     MAX_REQUESTS_PER_MINUTE = 1000
@@ -164,9 +159,25 @@ class P2PNode:
         async for message in websocket:
             print("Received message from peer:", message)
 
+    def manage_peers(self):
+        """Check the status of peers and prune disconnected or unresponsive peers."""
+        active_peers = {peer for peer in self.peers if self.ping_peer(peer)}
+        self.peers = active_peers
+
     async def broadcast(self, message):
-        if self.peers:
-            await asyncio.wait([peer.send(message) for peer in self.peers])
+        """Broadcast messages to all peers using an efficient compression protocol."""
+        import zlib
+        compressed_message = zlib.compress(message.encode())
+        for peer in self.peers:
+            await peer.send(compressed_message)
+
+    def ping_peer(self, peer):
+        """Ping a peer to check if it's still responsive."""
+        try:
+            response = requests.get(f'http://{peer}/ping')
+            return response.status_code == 200
+        except requests.RequestException:
+            return False
 
     async def discover_peers(self):
         async with aiohttp.ClientSession() as session:
@@ -181,21 +192,28 @@ class P2PNode:
                 except Exception as e:
                     logging.error(f"Failed to discover peers from node {node_address}: {e}")
 
+    def create_ssl_context(certfile, keyfile):
+        """Create and return an SSL context for secure connections."""
+        ssl_context = create_default_context(purpose=CERT_REQUIRED)
+        ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+        ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1  # Enforcing higher version TLS
+        return ssl_context
+
     async def start(self):
         try:
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(certfile='MySelfSignedCert.crt', keyfile='pk.pem')
-            ssl_context.load_verify_locations('MySelfSignedCert.crt')
-            ssl_context.verify_mode = ssl.CERT_REQUIRED
-
-            self.server = ThreadingTCPServer(self.server_address, P2PRequestHandler, bind_and_activate=False)
-            self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
-            self.server.server_bind()
-            self.server.server_activate()
-            self.running = True
-            logging.info("Secure P2P server started with mutual TLS")
-            server_thread = threading.Thread(target=self.server.serve_forever)
-            server_thread.start()
+            ssl_context = self.create_ssl_context('MySelfSignedCert.crt', 'pk.pem')
+            if ssl_context is not None:
+                self.server = ThreadingTCPServer(self.server_address, P2PRequestHandler, bind_and_activate=False)
+                self.server.socket = ssl_context.wrap_socket(self.server.socket, server_side=True)
+                self.server.server_bind()
+                self.server.server_activate()
+                self.running = True
+                logging.info("Secure P2P server started with mutual TLS")
+                server_thread = threading.Thread(target=self.server.serve_forever)
+                server_thread.start()
+                print("SSL context created successfully")
+            else:
+                print("Failed to create SSL context")
         except ssl.SSLError as e:
             print(f"SSL error occurred: {e}")
         except Exception as e:
@@ -220,16 +238,3 @@ class P2PNode:
             return await self.full_chain()
 
         return "HTTP/1.1 404 Not Found\r\n\r\n"
-
-    def discover_peers(self):
-        # Discover peers by requesting known peers from other nodes
-        for node_address in self.peers:
-            try:
-                response = requests.get(f'http://{node_address}/peers')
-                if response.status_code == 200:
-                    new_peers = response.json().get('peers', [])
-                    for peer in new_peers:
-                        if peer not in self.peers:
-                            self.peers.append(peer)
-            except Exception as e:
-                logging.error("Failed to discover peers from node %s: %s", node_address, e)
