@@ -473,6 +473,22 @@ class Blockchain:
             return True
         return False
 
+    def get_transactions_by_address(self, address):
+        transactions = []
+        try:
+            with open('blockchain.json', 'r') as file:
+                blockchain_data = json.load(file)
+                for block_data in blockchain_data:
+                    for transaction_data in block_data.get('transactions', []):
+                        if transaction_data.get('sender') == address or transaction_data.get('recipient') == address:
+                            transactions.append(transaction_data)
+            logging.info(f"Found {len(transactions)} transactions for address {address}")
+        except FileNotFoundError:
+            logging.error("Blockchain file not found.")
+        except Exception as e:
+            logging.error(f"An error occurred while loading blockchain from disk: {e}")
+        return transactions
+
     def is_valid(self, chain=None):
         if chain is None:
             chain = self.chain

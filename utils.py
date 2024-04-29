@@ -26,11 +26,3 @@ def process_transaction(sender, recipient, amount, blockchain):
     blockchain.new_transaction(transaction)
     print(f"Transaction processed: {amount} from {sender} to {recipient}.")
     return True
-
-def _verify_signature(public_key, signature, data):
-    """Verify the signature with the given public key and data."""
-    try:
-        public_key.verify(signature, data.encode(), ec.ECDSA(hashes.SHA256()))
-        return True
-    except Exception:
-        return False

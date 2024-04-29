@@ -62,8 +62,6 @@ async def mine_blocks(blockchain):
         block = blockchain.mine_block()
         if block:
             logging.info(f"New block mined successfully. Block hash: {block.hash_block()}")
-        else:
-            logging.error("Failed to mine a new block.")
     await asyncio.gather(*(mine() for _ in range(5)))
 
 def test_tps(blockchain, nodes, duration_seconds=10):

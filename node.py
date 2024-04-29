@@ -39,10 +39,11 @@ class Node:
         return hashlib.sha256(choices.encode()).digest()
 
     def sign_transaction(self, transaction):
-        """Sign a transaction using the private key."""
         transaction_data = transaction.to_string().encode()
-        signature = self.private_key.sign(transaction_data, ec.ECDSA(hashes.SHA256()))
-        transaction.signature = signature  # Attach the signature to the transaction
+        transaction.signature = self.private_key.sign(
+            transaction_data,
+            ec.ECDSA(hashes.SHA256())
+        )
 
     def get_public_key_serialized(self):
         """Serialize the public key for network transmission or verification."""
