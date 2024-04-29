@@ -2,16 +2,26 @@ from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import ec
-import hashlib, secrets
-import uuid
+import hashlib, secrets, base58
 from transaction import TransactionPool
 
 class Node:
     def __init__(self, address=None):
-        self.address = address if address else str(uuid.uuid4())
         self.private_key, self.public_key = self.generate_keys_using_penrose()
+        self.address = self.generate_address(self.public_key) if not address else address
         self.neighbors = []
         self.transaction_pool = TransactionPool()  # Initialize the transaction pool
+
+    def generate_address(self, public_key):
+        serialized_public = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        sha256_bpk = hashlib.sha256(serialized_public).digest()
+        ripemd160_bpk = hashlib.new('ripemd160', sha256_bpk).digest()
+        raw_address = b"\x00" + ripemd160_bpk  # Adding a version byte (0x00 for Bitcoin)
+        checksum = hashlib.sha256(hashlib.sha256(raw_address).digest()).digest()[:4]
+        return base58.b58encode(raw_address + checksum).decode('utf-8')
 
     def generate_keys_using_penrose(self):
         """Generate ECDSA key pair using Penrose tiling entropy."""

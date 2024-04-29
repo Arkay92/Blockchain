@@ -1,4 +1,4 @@
-import time, json, requests, sys, uuid, traceback, threading
+import time, json, requests, sys, uuid, traceback, threading, sqlite3, aiosqlite, base58
 from node import NodeValidator, Node
 from datetime import datetime
 from cryptography.hazmat.primitives import hashes
@@ -12,8 +12,36 @@ from smart_contract import SmartContract
 import hashlib, secrets
 from requests.exceptions import RequestException, HTTPError
 from collections import defaultdict
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import serialization
+from wallet import Wallet
 
 logging.basicConfig(level=logging.DEBUG)
+
+class BlockchainDB:
+    def __init__(self, db_path='blockchain.db'):
+        self.db_path = db_path
+        self.conn = sqlite3.connect(db_path)
+        self.create_tables()
+        
+    async def create_tables(self):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('CREATE TABLE IF NOT EXISTS blocks (index INT, hash TEXT, ...)')
+            await db.execute('CREATE TABLE IF NOT EXISTS transactions (hash TEXT, block_index INT, ...)')
+            await db.commit()
+
+    async def add_block(self, block):
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute('INSERT INTO blocks (index, hash, ...) VALUES (?, ?, ...)', (block.index, block.hash))
+            for tx in block.transactions:
+                await db.execute('INSERT INTO transactions (hash, block_index, ...) VALUES (?, ?, ...)', (tx.hash(), block.index))
+            await db.commit()
+
+    def get_blockchain(self):
+        cursor = self.conn.execute('SELECT * FROM blocks')
+        blocks = cursor.fetchall()
+        return blocks
 
 class Block:
     def __init__(self, index, timestamp, transactions, previous_hash, nonce):
@@ -50,6 +78,7 @@ class Blockchain:
     BASE_YEAR = 2023
     HALVING_FREQUENCY = 4
     DIFFICULTY = 2
+    chain_lock = Lock()
 
     def __init__(self):
         self.node_validator = NodeValidator()
@@ -57,19 +86,47 @@ class Blockchain:
         self.current_transactions = []
         self.transactions = []
         self.pending_transactions = []
-        self.transaction_queue = []  # Initializing the transaction queue
-        self.balances = {}  # Stores the balance for each node address
+        self.transaction_queue = [] 
+        self.balances = {} 
         self.balances_lock = threading.Lock()
         self.transactions_lock = threading.Lock()
         self.transaction_pool = TransactionPool() 
-        self.max_block_size = 1_000_000  # Set initial block size to 1 MB
-        
-        # Initialize the miner node first
-        self.miner_node = Node(str(uuid.uuid4()))  # or some other unique identifier
-        self.nodes.append(self.miner_node)  # Add the miner node to the list of nodes
-        
-        # Now that we have the miner node, we can create the genesis block
+        self.max_block_size = 1_000_000  
+        self.wallets = {node.address: Wallet(node) for node in self.nodes}  
+        self.private_key = ec.generate_private_key(ec.SECP256K1(), default_backend())
+        self.public_key = self.private_key.public_key()
+        self.miner_node = Node(self.generate_address(self.public_key)) 
+        self.nodes.append(self.miner_node) 
+        self.wallets = {node.address: Wallet(node) for node in self.nodes}
         self.chain = [self.create_genesis_block()]
+        self.smart_contracts = {}
+
+    def generate_address(self, public_key):
+        """Generate a blockchain address from a public key using SHA-256 and RIPEMD-160 hashing."""
+        serialized_public = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
+        sha256_bpk = hashlib.sha256(serialized_public).digest()
+        ripemd160_bpk = hashlib.new('ripemd160', sha256_bpk).digest()
+        raw_address = b"\x00" + ripemd160_bpk  # Adding a version byte (0x00 for Bitcoin)
+        checksum = hashlib.sha256(hashlib.sha256(raw_address).digest()).digest()[:4]
+        return base58.b58encode(raw_address + checksum).decode('utf-8')
+
+    def deploy_contract(self, code):
+        contract = SmartContract(code, self)
+        self.smart_contracts[contract.address] = contract
+        print(f"Deployed contract at address {contract.address}")
+        return contract.address
+
+    def get_contract_by_address(self, address):
+        return self.smart_contracts.get(address)
+
+    def add_node(self, public_key):
+        """Add a new node with a unique address to the blockchain."""
+        address = self.generate_address(public_key)
+        self.nodes.append(Node(address, public_key))  # Assuming Node constructor takes address and public key
+        self.wallets[address] = Wallet(Node(address, public_key))
 
     def execute_contract(self, transaction):
         # Convert JSON string back to dictionary if needed
@@ -123,10 +180,17 @@ class Blockchain:
         )
 
     def proof_of_work(self, last_block):
+        """
+        Perform proof-of-work by finding a nonce that, when combined with the previous block's hash,
+        produces a hash with a certain number of leading zeros.
+        """
         nonce = 0
-        while not self.is_valid_proof(last_block, nonce):
+        while True:
+            guess = f'{last_block.hash}{nonce}'.encode()
+            guess_hash = hashlib.sha256(guess).hexdigest()
+            if guess_hash[:self.DIFFICULTY] == '0' * self.DIFFICULTY:
+                return nonce  # Found a valid nonce
             nonce += 1
-        return nonce
     
     def is_valid_proof(self, last_block, nonce):
         guess = f'{last_block.hash}{nonce}'.encode()
@@ -254,23 +318,16 @@ class Blockchain:
             return new_block
         return None
 
-    def add_node(self, address=None):
-        if address is None:
-            node = Node(str(uuid.uuid4()))
-            self.miner_node = node
-            self.nodes.append(node)
-            self.update_balances()  # Update balances after adding a new node
-            return node.address
-        else:
-            node = self.get_node_by_address(address)
-            if node is None:
-                node = Node(address)
-                self.miner_node = node
-                self.nodes.append(node)
-                self.update_balances()  # Update balances after adding a new node
-                return node.address
-            else:
-                return node.address
+    def add_node(self):
+        private_key = ec.generate_private_key(ec.SECP256K1(), default_backend())
+        public_key = private_key.public_key()
+
+        node =  Node(self.generate_address(public_key))
+        self.wallets[node.address] = Wallet(node)  # Create a wallet for the nod
+        self.miner_node = node
+        self.nodes.append(node)
+        self.update_balances()  # Update balances after adding a new node
+        return node.address
 
     def get_balances(self):
         balances = defaultdict(int)  # Use defaultdict for automatic handling of missing keys
@@ -315,12 +372,16 @@ class Blockchain:
         return self.valid_proof(block.previous_hash, block.nonce, self.DIFFICULTY)
 
     def process_transaction(self, transaction):
-        if not self.is_transaction_valid(transaction):
-            return False
-        self.adjust_balance(transaction.sender, -transaction.amount)
-        self.adjust_balance(transaction.recipient, transaction.amount)
-        self.transactions.append(transaction)
-        return True
+        recipient = self.get_node_by_address(transaction.recipient) or self.get_contract_by_address(transaction.recipient)
+        if isinstance(recipient, SmartContract):
+            recipient.execute(transaction)
+        else:
+            if not self.is_transaction_valid(transaction):
+                return False
+            self.adjust_balance(transaction.sender, -transaction.amount)
+            self.adjust_balance(transaction.recipient, transaction.amount)
+            self.transactions.append(transaction)
+            return True
 
     def mine_block(self):
         if not self.transactions:
@@ -346,6 +407,8 @@ class Blockchain:
         self.chain.append(self.create_genesis_block())
         # Mine some initial blocks to build up additional rewards
         for _ in range(10):  # Mines 10 blocks
+            db = BlockchainDB()
+            db.add_block(self.chain[-1])
             self.mine_block()
         # Distribute funds from miner to other nodes
         self.distribute_initial_funds(100)  # Example: distribute 100 units to each node

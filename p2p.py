@@ -192,7 +192,7 @@ class P2PNode:
                 except Exception as e:
                     logging.error(f"Failed to discover peers from node {node_address}: {e}")
 
-    def create_ssl_context(certfile, keyfile):
+    def create_ssl_context(self, certfile, keyfile):
         """Create and return an SSL context for secure connections."""
         ssl_context = create_default_context(purpose=CERT_REQUIRED)
         ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)

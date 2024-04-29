@@ -1,33 +1,43 @@
 from hashlib import sha256
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives import serialization, hashes
-import json, time
+from collections import namedtuple
+import heapq, json, time
+
+TransactionEntry = namedtuple('TransactionEntry', ['fee', 'timestamp', 'transaction'])
 
 # Transaction Pool to hold unconfirmed transactions
 class TransactionPool:
     def __init__(self):
-        self.transactions = []
+        self.transactions = {}
         self.transaction_map = {}
 
     def add_transaction(self, transaction):
-        if transaction.hash() in self.transaction_map:
-            return False  # Avoid duplicate transactions
-        self.transactions.append(transaction)
-        self.transaction_map[transaction.hash()] = transaction
-        self.transactions.sort(key=lambda x: (-x.fee, x.timestamp))  # Higher fees and older transactions have priority
+        tx_hash = transaction.hash()
+        if tx_hash not in self.transactions:
+            entry = (-transaction.fee, transaction.timestamp, transaction)
+            self.transactions[tx_hash] = transaction
+            self.transaction_map[transaction.hash()] = transaction
+            heapq.heappush(self.transactions, entry)
+            return True
+        return False
 
     def remove_transactions(self, transactions):
         for transaction in transactions:
-            if transaction.hash() in self.transaction_map:
-                self.transactions.remove(transaction)
-                del self.transaction_map[transaction.hash()]
+            tx_hash = transaction.hash()
+            if tx_hash in self.transactions:
+                del self.transactions[tx_hash]
 
     def pick_transaction(self):
-        if self.transactions:
-            transaction = self.transactions.pop(0)
-            del self.transaction_map[transaction.hash()]
-            return transaction
+        while self.transactions:
+            entry = heapq.heappop(self.transactions)
+            if entry.transaction.hash() in self.transaction_map:
+                del self.transaction_map[entry.transaction.hash()]
+                return entry.transaction
         return None
+
+    def get_transactions(self):
+        return list(self.transactions.values())
 
 class Transaction:
     def __init__(self, sender, recipient, amount, description, fee, data="", contract_code="", sender_private_key=None, sender_public_key=None, signature=None):
