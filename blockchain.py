@@ -421,10 +421,17 @@ class Blockchain:
         try:
             with open(filename, 'r') as file:
                 blockchain_data = json.load(file)
-                # Load blockchain state from the file
+                self.chain = [Block(
+                    block_data["index"],
+                    block_data["timestamp"],
+                    [Transaction(**tx_data) for tx_data in block_data["transactions"]],
+                    block_data["previous_hash"],
+                    block_data["nonce"]
+                ) for block_data in blockchain_data]
+            logging.info("Blockchain loaded from disk successfully.")
         except FileNotFoundError:
             logging.warning("Blockchain file not found. Creating a new blockchain.")
-            start_blockchain()
+            self.start_blockchain()  # Create a new blockchain if the file is not found
         except Exception as e:
             logging.error("An error occurred while loading blockchain from disk: %s", e)
 

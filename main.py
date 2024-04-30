@@ -2,8 +2,10 @@ import logging
 from test import main as test_main
 from flask import Flask, jsonify
 from blockchain import Blockchain  
+from flask_cors import CORS
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 blockchain = Blockchain()
 
 @app.route('/<address>/transactions', methods=['GET'])
